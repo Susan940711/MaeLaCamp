@@ -119,7 +119,7 @@ try:
 
     st.success("Report created successfully.")
 
-    warnings, infos, oks, others = parse_pipeline_messages(logs)
+    warnings, _infos, oks, others = parse_pipeline_messages(logs)
 
     st.subheader("Warning Signs")
     if warnings:
@@ -134,13 +134,6 @@ try:
             st.success(line)
     else:
         st.info("No check lines were generated.")
-
-    st.subheader("Notes")
-    if infos:
-        for line in infos:
-            st.info(line)
-    else:
-        st.info("No info lines were generated.")
 
     if logs.strip():
         st.subheader("Pipeline logs")
