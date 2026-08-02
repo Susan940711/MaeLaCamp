@@ -62,6 +62,17 @@ SUMMARY_COLUMNS = [
     "Td At least one dose",
 ]
 
+CUMMU_SUMMARY_COLUMNS = [
+    "Year",
+    "Organization",
+    "Project Name",
+    "Twp_MIMU",
+    "Clinic Name",
+    "ALOD_U1",
+    "ALOD_U5",
+    "ALOD_>5",
+]
+
 INDICATOR_COLUMNS = [
     "Period",
     "Organization",
@@ -521,7 +532,7 @@ def create_summary_sheet_from_long_form(long_form: pd.DataFrame) -> pd.DataFrame
         row: dict[str, object] = {
             "Year": year_value,
             "period": period_value,
-            "Organization": "MaeLa Camp",
+            "Organization": "PRF",
             "Project Name": "REACH-KK",
             "District (EHO)": "",
             "Township_EHO": "",
@@ -570,6 +581,60 @@ def create_summary_sheet_from_long_form(long_form: pd.DataFrame) -> pd.DataFrame
     summary = summary.reindex(columns=SUMMARY_COLUMNS, fill_value=0)
     print(f"INFO: Created Summary sheet with {len(summary)} period row(s)")
     return summary
+
+
+def create_cummu_summary_sheet_from_long_form(long_form: pd.DataFrame) -> pd.DataFrame:
+    if long_form.empty:
+        print("WARNING: cummu_summary sheet generated with no rows because long_form is empty.")
+        return pd.DataFrame(columns=CUMMU_SUMMARY_COLUMNS)
+
+    work = long_form.copy()
+    work["vaccine_date"] = pd.to_datetime(work["vaccine_date"], errors="coerce")
+    work = work.dropna(subset=["vaccine_date", "patient_hn"])
+    if work.empty:
+        print("WARNING: cummu_summary sheet generated with no rows because required values are missing.")
+        return pd.DataFrame(columns=CUMMU_SUMMARY_COLUMNS)
+
+    work["beneficiary_id"] = work["patient_hn"].astype(str).str.strip()
+    work = work[work["beneficiary_id"] != ""]
+
+    # Keep exclusions aligned with Summary calculations.
+    excluded_summary_vaccines = {"opv4", "opv5", "ipv2"}
+    vaccine_key = work["vaccine"].astype(str).str.strip().str.lower()
+    work = work.loc[~vaccine_key.isin(excluded_summary_vaccines)].copy()
+
+    work["Year"] = work["vaccine_date"].dt.year.astype("Int64")
+    work["first_visit_age_num"] = pd.to_numeric(work.get("first_visit_age"), errors="coerce")
+
+    cummu_rows: list[dict[str, object]] = []
+    for year_value in sorted(work["Year"].dropna().astype(int).unique()):
+        year_frame = work[work["Year"] == year_value]
+
+        alod_year = year_frame.dropna(subset=["first_visit_age_num", "beneficiary_id"])
+        alod_year = alod_year.sort_values("vaccine_date").drop_duplicates(subset=["beneficiary_id"], keep="first")
+
+        row: dict[str, object] = {
+            "Year": int(year_value),
+            "Organization": "PRF",
+            "Project Name": "REACH-KK",
+            "Twp_MIMU": "",
+            "Clinic Name": "MaeLa Camp",
+            "ALOD_U1": int(
+                alod_year[alod_year["first_visit_age_num"].between(0, 11, inclusive="both")]["beneficiary_id"].nunique()
+            ),
+            "ALOD_U5": int(
+                alod_year[alod_year["first_visit_age_num"].between(12, 59, inclusive="both")]["beneficiary_id"].nunique()
+            ),
+            "ALOD_>5": int(
+                alod_year[alod_year["first_visit_age_num"] >= 60]["beneficiary_id"].nunique()
+            ),
+        }
+        cummu_rows.append(row)
+
+    cummu_summary = pd.DataFrame(cummu_rows)
+    cummu_summary = cummu_summary.reindex(columns=CUMMU_SUMMARY_COLUMNS, fill_value=0)
+    print(f"INFO: Created cummu_summary sheet with {len(cummu_summary)} year row(s)")
+    return cummu_summary
 
 
 def create_indicator_sheet_from_long_form(long_form: pd.DataFrame) -> pd.DataFrame:
@@ -983,6 +1048,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
     clean_normalized_map = build_column_map(clean_export_frame)
     long_form = build_long_form_sheet(clean_export_frame, clean_normalized_map)
     summary_sheet = create_summary_sheet_from_long_form(long_form)
+    cummu_summary_sheet = create_cummu_summary_sheet_from_long_form(long_form)
     indicator_sheet = create_indicator_sheet_from_long_form(long_form)
     age_at_dose_error_count = int(long_form.attrs.get("age_at_dose_error_count", 0))
     age_at_dose_error_hns = list(long_form.attrs.get("age_at_dose_error_hns", []))
@@ -1024,6 +1090,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
             long_form.to_excel(writer, sheet_name="long_form", index=False)
             apply_excel_date_format(writer, "long_form", long_form, ["patient_birthday", "first_visit_date", "vaccine_date"])
             summary_sheet.to_excel(writer, sheet_name="Summary", index=False)
+            cummu_summary_sheet.to_excel(writer, sheet_name="cummu_summary", index=False)
             indicator_sheet.to_excel(writer, sheet_name="indicator", index=False)
             validation_report.to_excel(writer, sheet_name="Validation_Report", index=False)
     except PermissionError:
@@ -1042,6 +1109,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
             long_form.to_excel(writer, sheet_name="long_form", index=False)
             apply_excel_date_format(writer, "long_form", long_form, ["patient_birthday", "first_visit_date", "vaccine_date"])
             summary_sheet.to_excel(writer, sheet_name="Summary", index=False)
+            cummu_summary_sheet.to_excel(writer, sheet_name="cummu_summary", index=False)
             indicator_sheet.to_excel(writer, sheet_name="indicator", index=False)
             validation_report.to_excel(writer, sheet_name="Validation_Report", index=False)
         print(
@@ -1052,6 +1120,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
     for _, row in validation_report.iterrows():
         print(f"[{row['status']}] {row['check']}: {row['details']}")
     print(f"[INFO] summary rows: {len(summary_sheet)}")
+    print(f"[INFO] cummu_summary rows: {len(cummu_summary_sheet)}")
     print(f"[INFO] indicator rows: {len(indicator_sheet)}")
     print(f"[INFO] long_form rows: {len(long_form)}")
     print(f"Saved output file: {final_output_path}")
