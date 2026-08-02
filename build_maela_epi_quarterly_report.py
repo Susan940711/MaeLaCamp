@@ -73,6 +73,33 @@ CUMMU_SUMMARY_COLUMNS = [
     "ALOD_>5",
 ]
 
+ALOD_CUMMU_COLUMNS = [
+    "Period",
+    "Organization",
+    "Project Name",
+    "indicator",
+    "Annual U1 Male",
+    "Annual U1 Female",
+    "Annual 1-5 Male",
+    "Annual 1-5 Female",
+    "Annual Total",
+    "S1 U1 Male",
+    "S1 U1 Female",
+    "S1 1-5 Male",
+    "S1 1-5 Female",
+    "S1 Total",
+    "uptoQ3 U1 Male",
+    "uptoQ3 U1 Female",
+    "uptoQ3 1-5 Male",
+    "uptoQ3 1-5 Female",
+    "uptoQ3 Total",
+    "S2 U1 Male",
+    "S2 U1 Female",
+    "S2 1-5 Male",
+    "S2 1-5 Female",
+    "S2 Total",
+]
+
 INDICATOR_COLUMNS = [
     "Period",
     "Organization",
@@ -637,6 +664,89 @@ def create_cummu_summary_sheet_from_long_form(long_form: pd.DataFrame) -> pd.Dat
     return cummu_summary
 
 
+def create_alod_cummu_sheet_from_long_form(long_form: pd.DataFrame) -> pd.DataFrame:
+    if long_form.empty:
+        print("WARNING: ALOD_cummu sheet generated with no rows because long_form is empty.")
+        return pd.DataFrame(columns=ALOD_CUMMU_COLUMNS)
+
+    work = long_form.copy()
+    work["vaccine_date"] = pd.to_datetime(work["vaccine_date"], errors="coerce")
+    work = work.dropna(subset=["vaccine_date", "patient_hn"])
+    if work.empty:
+        print("WARNING: ALOD_cummu sheet generated with no rows because required values are missing.")
+        return pd.DataFrame(columns=ALOD_CUMMU_COLUMNS)
+
+    work["beneficiary_id"] = work["patient_hn"].astype(str).str.strip()
+    work = work[work["beneficiary_id"] != ""]
+
+    # Keep exclusions aligned with Summary/indicator calculations.
+    excluded_vaccines = {"opv4", "opv5", "ipv2"}
+    vaccine_key = work["vaccine"].astype(str).str.strip().str.lower()
+    work = work.loc[~vaccine_key.isin(excluded_vaccines)].copy()
+
+    work["Year"] = work["vaccine_date"].dt.year.astype("Int64")
+    work["Month"] = work["vaccine_date"].dt.month.astype("Int64")
+    work["vaccine_group"] = work["vaccine"].map(map_vaccine_group_from_maela)
+    work["age_months"] = pd.to_numeric(work.get("age_at_dose"), errors="coerce")
+
+    sex_norm = work["sex_description"].astype(str).str.strip().str.lower()
+    work["sex_norm"] = sex_norm.map({"male": "M", "female": "F", "m": "M", "f": "F"}).fillna("")
+
+    def period_counts(base_mask: pd.Series, start_month: int, end_month: int) -> tuple[int, int, int, int, int]:
+        month_mask = base_mask & work["Month"].between(start_month, end_month, inclusive="both")
+        u1_mask = month_mask & work["age_months"].between(0, 11, inclusive="both")
+        u5_mask = month_mask & work["age_months"].between(12, 59, inclusive="both")
+
+        u1_m = int(work.loc[u1_mask & work["sex_norm"].eq("M"), "beneficiary_id"].nunique())
+        u1_f = int(work.loc[u1_mask & work["sex_norm"].eq("F"), "beneficiary_id"].nunique())
+        u5_m = int(work.loc[u5_mask & work["sex_norm"].eq("M"), "beneficiary_id"].nunique())
+        u5_f = int(work.loc[u5_mask & work["sex_norm"].eq("F"), "beneficiary_id"].nunique())
+        total = u1_m + u1_f + u5_m + u5_f
+        return u1_m, u1_f, u5_m, u5_f, total
+
+    rows: list[dict[str, object]] = []
+    years = sorted(work["Year"].dropna().astype(int).unique())
+    for year_value in years:
+        base_mask = work["Year"].eq(year_value) & work["vaccine_group"].notna()
+
+        annual_u1_m, annual_u1_f, annual_u5_m, annual_u5_f, annual_total = period_counts(base_mask, 1, 12)
+        s1_u1_m, s1_u1_f, s1_u5_m, s1_u5_f, s1_total = period_counts(base_mask, 1, 6)
+        uq3_u1_m, uq3_u1_f, uq3_u5_m, uq3_u5_f, uq3_total = period_counts(base_mask, 1, 9)
+        s2_u1_m, s2_u1_f, s2_u5_m, s2_u5_f, s2_total = period_counts(base_mask, 7, 12)
+
+        row: dict[str, object] = {
+            "Period": int(year_value),
+            "Organization": "PRF",
+            "Project Name": "REACH-KK",
+            "indicator": "At least one dose under 5-yr-old",
+            "Annual U1 Male": annual_u1_m,
+            "Annual U1 Female": annual_u1_f,
+            "Annual 1-5 Male": annual_u5_m,
+            "Annual 1-5 Female": annual_u5_f,
+            "Annual Total": annual_total,
+            "S1 U1 Male": s1_u1_m,
+            "S1 U1 Female": s1_u1_f,
+            "S1 1-5 Male": s1_u5_m,
+            "S1 1-5 Female": s1_u5_f,
+            "S1 Total": s1_total,
+            "uptoQ3 U1 Male": uq3_u1_m,
+            "uptoQ3 U1 Female": uq3_u1_f,
+            "uptoQ3 1-5 Male": uq3_u5_m,
+            "uptoQ3 1-5 Female": uq3_u5_f,
+            "uptoQ3 Total": uq3_total,
+            "S2 U1 Male": s2_u1_m,
+            "S2 U1 Female": s2_u1_f,
+            "S2 1-5 Male": s2_u5_m,
+            "S2 1-5 Female": s2_u5_f,
+            "S2 Total": s2_total,
+        }
+        rows.append(row)
+
+    alod_cummu = pd.DataFrame(rows).reindex(columns=ALOD_CUMMU_COLUMNS, fill_value=0)
+    print(f"INFO: Created ALOD_cummu sheet with {len(alod_cummu)} row(s)")
+    return alod_cummu
+
+
 def create_indicator_sheet_from_long_form(long_form: pd.DataFrame) -> pd.DataFrame:
     if long_form.empty:
         print("WARNING: Indicator sheet could not be generated because long_form is empty.")
@@ -1049,6 +1159,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
     long_form = build_long_form_sheet(clean_export_frame, clean_normalized_map)
     summary_sheet = create_summary_sheet_from_long_form(long_form)
     cummu_summary_sheet = create_cummu_summary_sheet_from_long_form(long_form)
+    alod_cummu_sheet = create_alod_cummu_sheet_from_long_form(long_form)
     indicator_sheet = create_indicator_sheet_from_long_form(long_form)
     age_at_dose_error_count = int(long_form.attrs.get("age_at_dose_error_count", 0))
     age_at_dose_error_hns = list(long_form.attrs.get("age_at_dose_error_hns", []))
@@ -1091,6 +1202,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
             apply_excel_date_format(writer, "long_form", long_form, ["patient_birthday", "first_visit_date", "vaccine_date"])
             summary_sheet.to_excel(writer, sheet_name="Summary", index=False)
             cummu_summary_sheet.to_excel(writer, sheet_name="cummu_summary", index=False)
+            alod_cummu_sheet.to_excel(writer, sheet_name="ALOD_cummu", index=False)
             indicator_sheet.to_excel(writer, sheet_name="indicator", index=False)
             validation_report.to_excel(writer, sheet_name="Validation_Report", index=False)
     except PermissionError:
@@ -1110,6 +1222,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
             apply_excel_date_format(writer, "long_form", long_form, ["patient_birthday", "first_visit_date", "vaccine_date"])
             summary_sheet.to_excel(writer, sheet_name="Summary", index=False)
             cummu_summary_sheet.to_excel(writer, sheet_name="cummu_summary", index=False)
+            alod_cummu_sheet.to_excel(writer, sheet_name="ALOD_cummu", index=False)
             indicator_sheet.to_excel(writer, sheet_name="indicator", index=False)
             validation_report.to_excel(writer, sheet_name="Validation_Report", index=False)
         print(
@@ -1121,6 +1234,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
         print(f"[{row['status']}] {row['check']}: {row['details']}")
     print(f"[INFO] summary rows: {len(summary_sheet)}")
     print(f"[INFO] cummu_summary rows: {len(cummu_summary_sheet)}")
+    print(f"[INFO] ALOD_cummu rows: {len(alod_cummu_sheet)}")
     print(f"[INFO] indicator rows: {len(indicator_sheet)}")
     print(f"[INFO] long_form rows: {len(long_form)}")
     print(f"Saved output file: {final_output_path}")
