@@ -931,17 +931,44 @@ def drop_requested_columns(frame: pd.DataFrame) -> list[str]:
     return columns_to_drop
 
 
-def add_verification_status_column(frame: pd.DataFrame) -> str:
+def add_verification_status_column(
+    frame: pd.DataFrame,
+    patient_hn_column: str,
+    duplicate_hns: list[str],
+    age_error_hns: list[str],
+) -> str:
     requested_column = "Verification Status"
     normalized_map = build_column_map(frame)
     existing_column = normalized_map.get(normalize_colname(requested_column))
 
-    if existing_column:
-        frame.loc[frame[existing_column].isna(), existing_column] = "Pending"
-        return existing_column
+    duplicate_hn_values = {
+        str(value).strip()
+        for value in duplicate_hns
+        if str(value).strip()
+    }
+    age_error_hn_values = {
+        str(value).strip()
+        for value in age_error_hns
+        if str(value).strip()
+    }
 
-    frame[requested_column] = "Pending"
-    return requested_column
+    column_name = existing_column or requested_column
+    if patient_hn_column not in frame.columns:
+        frame[column_name] = "Verified"
+        return column_name
+
+    hn_values = frame[patient_hn_column].astype("string").str.strip()
+    status_values: list[str] = []
+
+    for hn_value in hn_values:
+        hn_text = str(hn_value).strip() if not pd.isna(hn_value) else ""
+        if hn_text and (hn_text in duplicate_hn_values or hn_text in age_error_hn_values):
+            status_values.append("Needs Review")
+        else:
+            status_values.append("Verified")
+
+    frame[column_name] = status_values
+    return column_name
 
 
 def build_validation_report(
@@ -1165,7 +1192,6 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
         )
 
     dropped_columns = drop_requested_columns(frame)
-    verification_status_column = add_verification_status_column(frame)
 
     # Build long_form from the same cleaned dataframe that is exported to MaeLa_EPI_Clean.
     clean_export_frame = frame
@@ -1177,6 +1203,12 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
     indicator_sheet = create_indicator_sheet_from_long_form(long_form)
     age_at_dose_error_count = int(long_form.attrs.get("age_at_dose_error_count", 0))
     age_at_dose_error_hns = list(long_form.attrs.get("age_at_dose_error_hns", []))
+    add_verification_status_column(
+        frame=frame,
+        patient_hn_column=patient_hn_column,
+        duplicate_hns=duplicate_hns,
+        age_error_hns=age_at_dose_error_hns,
+    )
 
     validation_report = build_validation_report(
         duplicate_row_count=duplicate_row_count,
