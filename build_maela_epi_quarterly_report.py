@@ -931,6 +931,19 @@ def drop_requested_columns(frame: pd.DataFrame) -> list[str]:
     return columns_to_drop
 
 
+def add_verification_status_column(frame: pd.DataFrame) -> str:
+    requested_column = "Verification Status"
+    normalized_map = build_column_map(frame)
+    existing_column = normalized_map.get(normalize_colname(requested_column))
+
+    if existing_column:
+        frame.loc[frame[existing_column].isna(), existing_column] = "Pending"
+        return existing_column
+
+    frame[requested_column] = "Pending"
+    return requested_column
+
+
 def build_validation_report(
     duplicate_row_count: int,
     duplicate_hns: list[str],
@@ -1152,6 +1165,7 @@ def build_maela_report(input_path: Path, output_path: Path, sheet_arg: str | int
         )
 
     dropped_columns = drop_requested_columns(frame)
+    verification_status_column = add_verification_status_column(frame)
 
     # Build long_form from the same cleaned dataframe that is exported to MaeLa_EPI_Clean.
     clean_export_frame = frame
